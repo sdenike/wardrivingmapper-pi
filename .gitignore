@@ -1,0 +1,48 @@
+# Build output
+build/
+*.o
+*.a
+*.so
+compile_commands.json
+
+# Render artifacts at repo root (committed screenshots live under docs/)
+/screenshot*.png
+/*.bmp
+
+# macOS
+.DS_Store
+
+# ── Secrets / credentials — NEVER commit ──────────────────────────
+.env
+.env.*
+*.env
+.netrc
+secrets.*
+*.secret
+*secret*.json
+*secret*.ya*ml
+*.key
+*.pem
+*.p12
+*.pfx
+*.keystore
+*.jks
+id_rsa*
+id_ed25519*
+id_ecdsa*
+*.ppk
+*.token
+*token*.json
+credentials
+credentials.*
+*credentials*
+.htpasswd
+# Pi / Wi-Fi / network credentials
+wpa_supplicant*.conf
+*.nmconnection
+*.ovpn
+*.kdbx
+# Local config overrides
+*.local.*
+config.local.*
+settings.local.*
