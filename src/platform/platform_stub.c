@@ -55,9 +55,13 @@ void nvs_config_get(wardrive_config_t *out)
     out->use_metric = false;   /* imperial, matches firmware default */
 }
 
+/* Live touch-hold duration, written by the --live touch loop (main.c) and read
+ * by the ported ui_refresh() to drive the hold-to-activate progress bar. */
+volatile uint32_t g_btn_held_ms = 0;
+
 uint32_t button_get_held_ms(void)
 {
-    return 0;   /* no button held in a static render */
+    return g_btn_held_ms;
 }
 
 uint32_t wdm_tick_ms(void)
