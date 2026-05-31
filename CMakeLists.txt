@@ -28,5 +28,5 @@ set(APP_SRC
   src/platform/platform_stub.c
 )
 
-add_executable(wdm_screenshot ${APP_SRC} ${LVGL_SRC})
-target_link_libraries(wdm_screenshot m)
+add_executable(wdm_ui ${APP_SRC} ${LVGL_SRC})
+target_link_libraries(wdm_ui m)
