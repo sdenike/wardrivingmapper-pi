@@ -135,6 +135,27 @@ static uint32_t hold_full_ms(uint8_t s)
     return s == SCREEN_MENU_POWEROFF ? HOLD_POWEROFF_MS : LONG_MS;
 }
 
+/* Black out the SPI panel's framebuffer — used before power-off so the screen
+ * isn't left showing a stale (white) image as the board halts. */
+static void blank_panel(void)
+{
+    int fd = open("/dev/fb0", O_WRONLY);
+    if (fd < 0) return;
+    size_t bytes = (size_t)DISP_W * DISP_H * 2;   /* 16bpp fallback */
+    struct fb_var_screeninfo vi; struct fb_fix_screeninfo fi;
+    if (ioctl(fd, FBIOGET_FSCREENINFO, &fi) == 0 && ioctl(fd, FBIOGET_VSCREENINFO, &vi) == 0
+        && fi.line_length && vi.yres)
+        bytes = (size_t)fi.line_length * vi.yres;
+    char zeros[4096] = {0};
+    for (size_t off = 0; off < bytes; ) {
+        size_t n = (bytes - off < sizeof zeros) ? (bytes - off) : sizeof zeros;
+        ssize_t w = write(fd, zeros, n);
+        if (w <= 0) break;
+        off += (size_t)w;
+    }
+    close(fd);
+}
+
 static void trigger_menu_action(uint8_t s)
 {
     /* The hold mechanic + progress bar are live. Power Off is real now that the
@@ -149,10 +170,15 @@ static void trigger_menu_action(uint8_t s)
             fprintf(stderr, "ACTION: Force Upload — pending scan+upload pipeline\n");
             break;
         case SCREEN_MENU_POWEROFF:
-            fprintf(stderr, "ACTION: Power Off — shutting down\n");
+            fprintf(stderr, "ACTION: Power Off — blanking panel + shutting down\n");
+            blank_panel();                /* black the screen so it isn't left white */
             sync();                       /* flush the SD card before halt */
-            if (system("sudo systemctl poweroff") != 0)
-                fprintf(stderr, "Power Off: 'sudo systemctl poweroff' failed\n");
+            /* A Pi 'poweroff' halts the CPU but does NOT cut the SPI panel power,
+             * so drop the backlight (bl_power=4 = FB_BLANK_POWERDOWN) before halt.
+             * On success _exit() immediately so the render loop can't repaint. */
+            if (system("sudo sh -c 'for b in /sys/class/backlight/*/bl_power; do echo 4 > \"$b\" 2>/dev/null; done; sync; systemctl poweroff'") == 0)
+                _exit(0);
+            fprintf(stderr, "Power Off: command failed\n");
             break;
         default: break;
     }
