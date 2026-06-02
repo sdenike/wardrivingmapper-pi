@@ -78,13 +78,17 @@ port. **Geometry TBD with the user.**
 Researched and confirmed against the actual Pi over SSH:
 
 - **Panel:** Elecrow RR035 HAT = **ILI9486** + XPT2046 touch (ADS7846-compatible).
-- **Overlay:** the stock `piscreen` overlay matches the HAT pinout
-  (DC=GPIO24, RST=GPIO25, LED=GPIO22, touch PENIRQ=GPIO17). Append to
-  `/boot/firmware/config.txt`:
-  `dtoverlay=piscreen,drm,rotate=90,speed=24000000` (keep `vc4-kms-v3d`).
-- **fbdev vs DRM:** for LVGL's classic `fbdev` driver, prefer the fbtft path
-  (drop `,drm`, add `max_framebuffers=2`) for a true `/dev/fb1`. Decide once the
-  Pi LVGL display backend is chosen.
+- **Overlay (CONFIRMED working 2026-06-02):** the stock `piscreen` overlay
+  matches the HAT pinout (DC=GPIO24, RST=GPIO25, LED=GPIO22, touch
+  PENIRQ=GPIO17). Persisted in `/boot/firmware/config.txt` (with
+  `dtparam=spi=on`): `dtoverlay=piscreen,rotate=90,speed=24000000` — the
+  **non-drm fbtft** variant. `vc4-kms-v3d` stays.
+- **Use the non-drm variant, NOT `,drm`:** the `,drm` variant comes up portrait
+  **320×480**; the fbtft variant gives the landscape **480×320** the UI renders.
+  With no HDMI attached, vc4-kms creates no framebuffer, so fbtft grabs
+  **`/dev/fb0`** (16bpp) — the node the app opens (NOT `/dev/fb1`). The app
+  auto-detects the ADS7846 touch node by capability, so event-number shuffles
+  across reboots don't matter.
 - **Needs apt:** `evtest`, `tslib`/`libts-bin` (calibration), plus `cmake`/`git`
   to build on-device. Touch calibration via tslib `ts_calibrate` → `/etc/pointercal`.
 - Reboot + verify `/dev/fb1` + `evtest` is a deliberate step (panel could be

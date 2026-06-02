@@ -13,7 +13,7 @@
  *                     it (Wi-Fi Setup / Force Upload / Power Off), like the
  *                     ESP32 long-press.
  *
- * Flags: --touch <dev> (default /dev/input/event2), --swap-axes, --invert-x,
+ * Flags: --touch <dev> (default: auto-detect touchscreen), --swap-axes, --invert-x,
  *        --bgr, --swap-bytes.  On macOS only the PNG path is compiled in.
  */
 #include <stdint.h>
@@ -76,6 +76,7 @@ static void dump_info(void)
 #include <sys/ioctl.h>
 #include <linux/fb.h>
 #include <linux/input.h>
+#include <dirent.h>
 
 extern volatile uint32_t g_btn_held_ms;   /* platform_stub.c */
 
@@ -147,17 +148,68 @@ static void trigger_menu_action(uint8_t s)
     }
 }
 
+/* Auto-detect the touchscreen: the first /dev/input/event* that advertises
+ * ABS_X, ABS_Y and BTN_TOUCH. Survives event-node renumbering across reboots
+ * (e.g. the HDMI inputs enumerating and shifting the numbers — which is what
+ * left the app reading the HDMI audio jack instead of the panel). Returns 1
+ * and fills `out` on success, 0 if no touchscreen is present. */
+static int find_touch_device(char *out, size_t outsz)
+{
+    DIR *dir = opendir("/dev/input");
+    if (!dir) return 0;
+    int found = 0;
+    struct dirent *de;
+    while (!found && (de = readdir(dir))) {
+        if (strncmp(de->d_name, "event", 5) != 0) continue;
+        char path[300];
+        snprintf(path, sizeof path, "/dev/input/%s", de->d_name);
+        int fd = open(path, O_RDONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+        unsigned long types = 0;
+        unsigned long absbits[ABS_MAX / (8 * sizeof(long)) + 1];
+        unsigned long keybits[KEY_MAX / (8 * sizeof(long)) + 1];
+        memset(absbits, 0, sizeof absbits);
+        memset(keybits, 0, sizeof keybits);
+        if (ioctl(fd, EVIOCGBIT(0, sizeof types), &types) >= 0 &&
+            (types & (1UL << EV_ABS)) && (types & (1UL << EV_KEY)) &&
+            ioctl(fd, EVIOCGBIT(EV_ABS, sizeof absbits), absbits) >= 0 &&
+            ioctl(fd, EVIOCGBIT(EV_KEY, sizeof keybits), keybits) >= 0) {
+            int has_x = absbits[ABS_X / (8 * sizeof(long))] & (1UL << (ABS_X % (8 * sizeof(long))));
+            int has_y = absbits[ABS_Y / (8 * sizeof(long))] & (1UL << (ABS_Y % (8 * sizeof(long))));
+            int has_touch = keybits[BTN_TOUCH / (8 * sizeof(long))] & (1UL << (BTN_TOUCH % (8 * sizeof(long))));
+            if (has_x && has_y && has_touch) {
+                strncpy(out, path, outsz - 1);
+                out[outsz - 1] = '\0';
+                found = 1;
+            }
+        }
+        close(fd);
+    }
+    closedir(dir);
+    return found;
+}
+
 static int run_live(const char *fb_dev, const char *touch_dev,
                     int swap_rb, int swap_bytes, int swap_axes, int invert_x)
 {
     signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
     fb_target_t fb;
     if (fb_open(&fb, fb_dev) < 0) return 1;
+    char auto_touch[300];
+    if (!touch_dev) {
+        if (find_touch_device(auto_touch, sizeof auto_touch)) {
+            touch_dev = auto_touch;
+            fprintf(stderr, "touch: auto-detected %s\n", touch_dev);
+        } else {
+            touch_dev = "/dev/input/event0";
+            fprintf(stderr, "touch: none auto-detected; trying %s\n", touch_dev);
+        }
+    }
     int tfd = open(touch_dev, O_RDONLY | O_NONBLOCK);
     if (tfd < 0) fprintf(stderr, "warn: no touch %s (%s)\n", touch_dev, strerror(errno));
     fprintf(stderr, "live: tap=next, swipe=prev/next, hold=select. Ctrl-C to quit.\n");
 
-    int nav_idx = 0, touching = 0, moved = 0, fired = 0;
+    int nav_idx = 0, touching = 0, moved = 0, fired = 0, start_set = 0;
     int sx = 0, sy = 0, cx = 0, cy = 0;
     uint32_t down_ms = 0, last_refresh = 0;
     int need_render = 1;   /* force initial full paint */
@@ -169,11 +221,18 @@ static int run_live(const char *fb_dev, const char *touch_dev,
             while (read(tfd, &ev, sizeof ev) == (ssize_t)sizeof ev) {
                 if (ev.type == EV_ABS && ev.code == ABS_X) cx = ev.value;
                 else if (ev.type == EV_ABS && ev.code == ABS_Y) cy = ev.value;
+                else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
+                    /* Latch the start point on the first full frame AFTER
+                     * pen-down: ADS7846 emits BTN_TOUCH *before* that frame's
+                     * ABS_X/Y, so latching on the BTN_TOUCH edge captures the
+                     * PREVIOUS gesture's endpoint → random/opposite swipe dir. */
+                    if (touching && !start_set) { sx = cx; sy = cy; start_set = 1; }
+                }
                 else if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
-                    if (ev.value) { touching = 1; sx = cx; sy = cy; down_ms = wdm_tick_ms(); moved = 0; fired = 0; }
+                    if (ev.value) { touching = 1; start_set = 0; down_ms = wdm_tick_ms(); moved = 0; fired = 0; }
                     else if (touching) {
                         touching = 0;
-                        int dx = cx - sx, dy = cy - sy;
+                        int dx = start_set ? cx - sx : 0, dy = start_set ? cy - sy : 0;
                         int hx = swap_axes ? dy : dx, hy = swap_axes ? dx : dy;
                         if (invert_x) hx = -hx;
                         uint32_t dur = wdm_tick_ms() - down_ms;
@@ -190,7 +249,7 @@ static int run_live(const char *fb_dev, const char *touch_dev,
         }
 
         /* ── hold tracking while finger is down ───────────── */
-        if (touching) {
+        if (touching && start_set) {
             int dx = cx - sx, dy = cy - sy;
             if (abs(dx) > SWIPE_PX || abs(dy) > SWIPE_PX) moved = 1;
             if (!moved) {
@@ -256,7 +315,7 @@ static void setup_display(void)
 
 int main(int argc, char **argv)
 {
-    const char *png_out = NULL, *fb_dev = NULL, *touch_dev = "/dev/input/event2";
+    const char *png_out = NULL, *fb_dev = NULL, *touch_dev = NULL;  /* NULL = auto-detect */
     int live = 0, swap_rb = 0, swap_bytes = 0, swap_axes = 0, invert_x = 0;
 
     for (int i = 1; i < argc; i++) {

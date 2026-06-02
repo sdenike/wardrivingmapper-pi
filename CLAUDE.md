@@ -42,10 +42,11 @@ Override geometry at configure time, e.g. landscape:
 - SSH: reach the Pi over SSH with a key (use your own host/IP). Hostname
   WarDrivingMapper-Pi. Pi 3B, Debian 13 trixie, kernel 6.18, ~905 MB RAM.
 - GPS: `/dev/ttyACM0` (USB u-blox 7). **gpsd not installed yet.**
-- Display: Elecrow 3.5" 480×320 **ILI9486** SPI + XPT2046 touch. **Not lit yet** —
-  SPI is off in `/boot/firmware/config.txt`. Bring-up plan in `docs/design.md`
-  (stock `piscreen` overlay). Lighting it needs a reboot — do it deliberately,
-  with the user.
+- Display: Elecrow 3.5" 480×320 **ILI9486** SPI + XPT2046 touch. **LIT + persisted**
+  (2026-06-02): `/boot/firmware/config.txt` has `dtparam=spi=on` +
+  `dtoverlay=piscreen,rotate=90,speed=24000000` (non-drm fbtft → `/dev/fb0`
+  480×320). `wdm-ui.service` auto-starts on boot; the app auto-detects the
+  ADS7846 touch node by capability. See `docs/design.md`.
 - Missing on the Pi: `cmake`, `git`, `evtest`, `tslib` — `apt install` when
   building / calibrating on-device.
 
