@@ -137,13 +137,23 @@ static uint32_t hold_full_ms(uint8_t s)
 
 static void trigger_menu_action(uint8_t s)
 {
-    /* The hold mechanic + progress bar are live now; the actions below are
-     * placeholders until those features are wired (and the boot overlay is
-     * persisted, so Power Off won't strand the panel). */
+    /* The hold mechanic + progress bar are live. Power Off is real now that the
+     * boot overlay is persisted (the panel comes back lit + auto-starts on the
+     * next power-on). Wi-Fi Setup + Force Upload still await the Pi's
+     * config-AP/web UI and the scan+upload pipeline — see docs/design.md. */
     switch (s) {
-        case SCREEN_MENU_SETUP:   fprintf(stderr, "ACTION: enter Wi-Fi Setup (not implemented yet)\n"); break;
-        case SCREEN_MENU_UPLOAD:  fprintf(stderr, "ACTION: Force Upload (not implemented yet)\n"); break;
-        case SCREEN_MENU_POWEROFF:fprintf(stderr, "ACTION: Power Off (placeholder — not shutting down yet)\n"); break;
+        case SCREEN_MENU_SETUP:
+            fprintf(stderr, "ACTION: Wi-Fi Setup — pending config-AP/web UI\n");
+            break;
+        case SCREEN_MENU_UPLOAD:
+            fprintf(stderr, "ACTION: Force Upload — pending scan+upload pipeline\n");
+            break;
+        case SCREEN_MENU_POWEROFF:
+            fprintf(stderr, "ACTION: Power Off — shutting down\n");
+            sync();                       /* flush the SD card before halt */
+            if (system("sudo systemctl poweroff") != 0)
+                fprintf(stderr, "Power Off: 'sudo systemctl poweroff' failed\n");
+            break;
         default: break;
     }
 }
