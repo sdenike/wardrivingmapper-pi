@@ -46,3 +46,7 @@ wpa_supplicant*.conf
 *.local.*
 config.local.*
 settings.local.*
+
+# Pi wardriver runtime: real device config (has the API key) + scan logs
+/config.txt
+/data/

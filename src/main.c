@@ -24,6 +24,11 @@
 #include "lvgl.h"
 #include "wdm_platform.h"
 #include "screens.h"
+#include "pipeline.h"
+#include "upload.h"
+#include "config.h"
+#include "setup_ap.h"
+#include "scan_iw.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -158,16 +163,19 @@ static void blank_panel(void)
 
 static void trigger_menu_action(uint8_t s)
 {
-    /* The hold mechanic + progress bar are live. Power Off is real now that the
-     * boot overlay is persisted (the panel comes back lit + auto-starts on the
-     * next power-on). Wi-Fi Setup + Force Upload still await the Pi's
-     * config-AP/web UI and the scan+upload pipeline — see docs/design.md. */
+    /* The hold mechanic + progress bar are live. Force Upload kicks the libcurl
+     * upload thread and shows the SCREEN_UPLOAD arc. Wi-Fi Setup shows the setup
+     * screen (status for now; the on-device config AP + web UI is slice 4).
+     * Power Off is real (panel comes back lit + auto-starts on next power-on). */
     switch (s) {
         case SCREEN_MENU_SETUP:
-            fprintf(stderr, "ACTION: Wi-Fi Setup — pending config-AP/web UI\n");
+            fprintf(stderr, "ACTION: Wi-Fi Setup — starting hotspot + config web UI\n");
+            g_system_state.current_screen = SCREEN_SETUP_ACTIVE;
+            setup_mode_start();           /* wlan0 → hotspot + web server */
             break;
         case SCREEN_MENU_UPLOAD:
-            fprintf(stderr, "ACTION: Force Upload — pending scan+upload pipeline\n");
+            fprintf(stderr, "ACTION: Force Upload — starting upload\n");
+            wdm_pipeline_force_upload();
             break;
         case SCREEN_MENU_POWEROFF:
             fprintf(stderr, "ACTION: Power Off — blanking panel + shutting down\n");
@@ -245,6 +253,10 @@ static int run_live(const char *fb_dev, const char *touch_dev,
     if (tfd < 0) fprintf(stderr, "warn: no touch %s (%s)\n", touch_dev, strerror(errno));
     fprintf(stderr, "live: tap=next, swipe=prev/next, hold=select. Ctrl-C to quit.\n");
 
+    /* Go live: load config, start the GPS + scan threads (upload is on demand).
+     * Replaces platform_stub.c's demo values with real sensor data. */
+    wdm_pipeline_start();
+
     int nav_idx = 0, touching = 0, moved = 0, fired = 0, start_set = 0;
     int sx = 0, sy = 0, cx = 0, cy = 0;
     uint32_t down_ms = 0, last_refresh = 0;
@@ -272,11 +284,17 @@ static int run_live(const char *fb_dev, const char *touch_dev,
                         int hx = swap_axes ? dy : dx, hy = swap_axes ? dx : dy;
                         if (invert_x) hx = -hx;
                         uint32_t dur = wdm_tick_ms() - down_ms;
-                        if (moved && abs(hx) > SWIPE_PX && abs(hx) > abs(hy))
+                        /* A fired hold already set the screen (Setup/Upload) in
+                         * trigger_menu_action; releasing the finger must NOT snap
+                         * it back to the menu (that made Setup/Upload flash and
+                         * vanish). Only tap/swipe navigation moves the screen. */
+                        if (moved && abs(hx) > SWIPE_PX && abs(hx) > abs(hy)) {
                             nav_idx = (nav_idx + (hx > 0 ? 1 : -1) + NAV_N) % NAV_N;   /* swipe */
-                        else if (!moved && !fired && dur < TAP_MS)
+                            g_system_state.current_screen = NAV_CYCLE[nav_idx];
+                        } else if (!moved && !fired && dur < TAP_MS) {
                             nav_idx = (nav_idx + 1) % NAV_N;                            /* tap = next */
-                        g_system_state.current_screen = NAV_CYCLE[nav_idx];
+                            g_system_state.current_screen = NAV_CYCLE[nav_idx];
+                        }
                         g_btn_held_ms = 0;
                         need_render = 1;
                     }
@@ -299,6 +317,65 @@ static int run_live(const char *fb_dev, const char *touch_dev,
                 }
                 need_render = 1;   /* animate the bar */
             } else if (g_btn_held_ms) { g_btn_held_ms = 0; need_render = 1; }
+        }
+
+        /* ── upload screen bridge (LVGL only ever touched here, on this
+         *    thread). The upload worker just publishes status; we render the
+         *    SCREEN_UPLOAD arc while the user is on it, and let the upload run
+         *    in the background if they navigate away. ─────────── */
+        {
+            static uint32_t up_prev_done = 0, up_prev_total = 0; static int up_prev_active = 0;
+            static uint32_t up_result_at = 0;
+            upload_status_t us;
+            if (upload_poll(&us)) {
+                int on_upload = (g_system_state.current_screen == SCREEN_UPLOAD);
+                /* Update on done OR total change — total starts 0 and becomes the
+                 * record count once the worker has read the log, so tracking only
+                 * `done` left the screen stuck at "0/0". */
+                if (on_upload && us.active &&
+                    (!up_prev_active || us.done != up_prev_done || us.total != up_prev_total)) {
+                    display_show_upload_progress(us.done, us.total, us.batch_idx,
+                                                 us.batch_total, "", us.host);
+                    need_render = 1;
+                }
+                if (on_upload && us.finished) {
+                    display_show_upload_result(us.ok, us.msg);
+                    up_result_at = wdm_tick_ms();   /* start the auto-return timer */
+                    need_render = 1;
+                }
+                up_prev_done = us.done; up_prev_total = us.total; up_prev_active = us.active;
+            }
+            /* Auto-return to the scan screen ~6 s after the result is shown (the
+             * firmware does the same) so the device doesn't get stuck on UPLOAD. */
+            if (up_result_at && g_system_state.current_screen == SCREEN_UPLOAD &&
+                wdm_tick_ms() - up_result_at > 6000) {
+                g_system_state.current_screen = SCREEN_SCAN;
+                nav_idx = 0;                     /* NAV_CYCLE[0] = SCAN; keep taps sane */
+                up_result_at = 0;
+                need_render = 1;
+            }
+            if (g_system_state.current_screen != SCREEN_UPLOAD) up_result_at = 0;
+        }
+
+        /* ── Wi-Fi Setup teardown bridge (main thread owns nmcli) — end setup
+         *    on a successful join (flagged by the web thread), when the user
+         *    taps away from the Setup screen, or after a 10-min timeout. ─── */
+        {
+            static uint32_t setup_since = 0;
+            if (setup_mode_active()) {
+                if (setup_since == 0) setup_since = wdm_tick_ms();
+                int left   = (g_system_state.current_screen != SCREEN_SETUP_ACTIVE);
+                int t_out  = (wdm_tick_ms() - setup_since > 600000u);
+                if (setup_should_stop() || left || t_out) {
+                    setup_mode_stop();
+                    setup_since = 0;
+                    if (g_system_state.current_screen == SCREEN_SETUP_ACTIVE)
+                        g_system_state.current_screen = SCREEN_SCAN;
+                    need_render = 1;
+                }
+            } else {
+                setup_since = 0;
+            }
         }
 
         /* ── render: on change/hold, else every 500ms ─────── */
@@ -330,6 +407,50 @@ static int blit_once(const char *fb_dev, int swap_rb, int swap_bytes)
     fprintf(stderr, "blitted dashboard to %s\n", fb_dev);
     return 0;
 }
+
+/* Headless one-shot upload (no panel/touch). Lets you Force-Upload over SSH and
+ * doubles as the upload integration test. Loads config, runs the upload thread
+ * to completion, prints the result. */
+static int run_upload_once(void)
+{
+    const char *cp = getenv("WDM_CONFIG");
+    if (!cp || !*cp) cp = "config.txt";
+    config_load(cp);
+
+    upload_status_t us;
+    memset(&us, 0, sizeof us);
+    upload_start();                 /* sets active=true before spawning worker */
+    do { usleep(200000); upload_poll(&us); } while (us.active);
+
+    fprintf(stderr, "upload: %s — %s (%u/%u records)\n",
+            us.ok ? "OK" : "FAILED", us.msg, us.done, us.total);
+    return us.ok ? 0 : 1;
+}
+
+/* Headless Wi-Fi Setup test: bring up the hotspot + web UI, hold it open so it
+ * can be curl'd / browsed, then tear down. Lets us verify the AP + web server
+ * over SSH without the touchscreen. Auto-stops on a join or after ~90s. */
+static int run_setup_test(void)
+{
+    const char *cp = getenv("WDM_CONFIG");
+    if (!cp || !*cp) cp = "config.txt";
+    config_load(cp);
+    /* Zero the stub GPS fix so the scanner doesn't log fake Eiffel-Tower records
+     * during the test (wdm_pipeline_start does this for the real service). */
+    g_gps_data.is_valid = false;
+    g_system_state.ssids_logged = 0;
+    g_system_state.scan_count = 0;
+    signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
+    scan_thread_start();        /* mirror the service: scanner active on the
+                                 * dongle, so setup exercises the pause-then-AP path */
+    sleep(12);                  /* let a scan or two run before entering setup */
+    setup_mode_start();
+    fprintf(stderr, "setup-test: hotspot up; browse/curl the web UI. Auto-stop in 90s, on join, or on SIGTERM.\n");
+    for (int i = 0; i < 90 && !setup_should_stop() && !g_stop; i++) sleep(1);
+    setup_mode_stop();
+    fprintf(stderr, "setup-test: stopped; wlan0 restored to client.\n");
+    return 0;
+}
 #endif /* __linux__ */
 
 static void setup_display(void)
@@ -356,6 +477,20 @@ int main(int argc, char **argv)
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--info"))                   { dump_info(); return 0; }
+        else if (!strcmp(argv[i], "--upload-once")) {
+#ifdef __linux__
+            return run_upload_once();
+#else
+            fprintf(stderr, "--upload-once is Linux-only\n"); return 3;
+#endif
+        }
+        else if (!strcmp(argv[i], "--setup-test")) {
+#ifdef __linux__
+            return run_setup_test();
+#else
+            fprintf(stderr, "--setup-test is Linux-only\n"); return 3;
+#endif
+        }
         else if (!strcmp(argv[i], "--live"))              live = 1;
         else if (!strcmp(argv[i], "--fb") && i+1<argc)    fb_dev = argv[++i];
         else if (!strcmp(argv[i], "--touch") && i+1<argc) touch_dev = argv[++i];

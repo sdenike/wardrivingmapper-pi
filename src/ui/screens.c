@@ -298,7 +298,7 @@ void create_ui(void)
     lv_obj_align(setup_pass_value, LV_ALIGN_TOP_LEFT, SETUP_COL_X, 62);
 
     lv_obj_t *setup_url = lv_label_create(setup_panel);
-    lv_label_set_text(setup_url, LV_SYMBOL_HOME "  192.168.4.1");
+    lv_label_set_text(setup_url, LV_SYMBOL_HOME "  http://10.42.0.1");
     lv_obj_set_style_text_color(setup_url, lv_color_hex(0x89DCEB), LV_PART_MAIN);
     lv_obj_set_style_text_font(setup_url, &lv_font_montserrat_14, LV_PART_MAIN);
     lv_obj_set_width(setup_url, SETUP_COL_W);
@@ -547,6 +547,14 @@ void create_ui(void)
     // the active one, which would show a black/blank upload UI until the
     // first dashboard repaint catches up.
     if (s_main_scr) lv_scr_load(s_main_scr);
+
+    // Enable the cross-module display helpers. The firmware set these in
+    // display_task (dropped in this port); without them the upload-screen
+    // helpers (display_show_upload_progress/result) early-return and the arc
+    // never paints. The shim mutex is a no-op — these helpers are only ever
+    // called from main.c's single render thread, so no real lock is needed.
+    lvgl_mutex = xSemaphoreCreateMutex();
+    s_display_ready = true;
 }
 
 // ============================================================

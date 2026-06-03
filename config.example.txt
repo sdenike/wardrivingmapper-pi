@@ -1,0 +1,26 @@
+# WarDrivingMapper Pi config — copy to config.txt (NEVER commit config.txt).
+# Plain key=value, '#' starts a comment. Edited over SSH for now; the slice-4
+# web UI will write this same file. The app reads ./config.txt at startup
+# (service WorkingDirectory = this checkout), or $WDM_CONFIG if set.
+
+# Bearer API key for uploads — generate one on your account's dashboard.
+api_key=
+
+# Full ingest endpoint (default is the public instance).
+server_url=https://wardrivingmapper.com/api/v1/scans
+
+# Name this device reports as (device_id in uploads).
+device_name=Pi WarDriver
+
+# Display units: imperial (mph/ft) or metric (km/h/m).
+units=imperial
+
+# Radio to scan on. wlan1 = the USB dongle (recommended, dedicated); wlan0 =
+# the onboard radio. Swap by changing this one line.
+scan_iface=wlan1
+
+# Seconds between scans.
+scan_interval_s=10
+
+# Keep uploaded records in data/wardrive.archive.jsonl instead of discarding.
+keep_uploaded=false
