@@ -14,6 +14,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 
 #define TAG       "scan"
 #define MAX_APS   512
@@ -197,6 +198,12 @@ static void *scan_thread(void *arg)
         g_system_state.ssids_logged += (uint32_t)logged;
         g_system_state.scanner_heartbeat++;
         g_system_state.sd_ready = true;
+        /* Real SD-card usage (the screen had the ESP32 stub's fake 1/12 GB). */
+        struct statvfs vfs;
+        if (statvfs(".", &vfs) == 0) {
+            g_system_state.sd_total_bytes = (uint64_t)vfs.f_blocks * vfs.f_frsize;
+            g_system_state.sd_free_bytes  = (uint64_t)vfs.f_bavail * vfs.f_frsize;
+        }
         ESP_LOGI(TAG, "scan #%u: %d APs visible, %d logged, gps=%s sats=%u",
                  g_system_state.scan_count, n, logged,
                  fix.is_valid ? "fix" : "no-fix", (unsigned)fix.satellites);

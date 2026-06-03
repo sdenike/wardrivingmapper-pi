@@ -37,6 +37,11 @@ void wdm_pipeline_start(void)
     g_gps_data.satellites        = 0;       /* drop the stub count until gpsd reports */
     g_system_state.gps_fix       = false;
     g_events &= ~EVT_GPS_FIX;
+    /* Pi-specific: it's USB-powered (no battery gauge) and has no Bluetooth, so
+     * drop the ESP32 battery % and BLE icon from the header. */
+    g_system_state.battery_pct   = -1.0f;   /* <0 = "USB power, no battery" sentinel */
+    g_system_state.is_charging   = false;
+    g_system_state.ble_enabled   = false;
 
     if (gps_thread_start() != 0)  ESP_LOGW(TAG, "GPS thread failed to start");
     if (scan_thread_start() != 0) ESP_LOGW(TAG, "scan thread failed to start");

@@ -816,7 +816,11 @@ void ui_refresh(void)
     // Battery readout. When plugged in we surface "USB" alongside the
     // percent — earlier visual of "⚡ USB" without a percent was preferred
     // by the user but lost the live state; this keeps both.
-    if (state.is_charging) {
+    if (state.battery_pct < 0.0f) {
+        // USB-powered device with no battery gauge (the Pi): show power, no
+        // misleading percentage. (battery_pct < 0 is the "no battery" sentinel.)
+        snprintf(buf, sizeof(buf), LV_SYMBOL_CHARGE " USB");
+    } else if (state.is_charging) {
         // Charging / USB powered — bolt plus the live percentage.
         snprintf(buf, sizeof(buf), LV_SYMBOL_CHARGE " USB %.0f%%", state.battery_pct);
     } else {
@@ -830,7 +834,7 @@ void ui_refresh(void)
     }
     lv_label_set_text(lbl_battery, buf);
     lv_obj_set_style_text_color(lbl_battery,
-        state.is_charging      ? lv_color_hex(0x00DDFF) :
+        (state.is_charging || state.battery_pct < 0.0f) ? lv_color_hex(0x00DDFF) :
         (evts & EVT_LOW_BATTERY) ? lv_color_hex(0xFF4444) :
                                    lv_color_hex(0xCCCCCC),
         LV_PART_MAIN);
