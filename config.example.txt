@@ -15,9 +15,9 @@ device_name=Pi WarDriver
 # Display units: imperial (mph/ft) or metric (km/h/m).
 units=imperial
 
-# Radio to scan on. wlan1 = the USB dongle (recommended, dedicated); wlan0 =
-# the onboard radio. Swap by changing this one line.
-scan_iface=wlan1
+# Radio to scan on (stable names set by the installer's .link/netplan rules):
+# wscan = the USB dongle (recommended, dedicated); wmain = the onboard radio.
+scan_iface=wscan
 
 # Seconds between scans.
 scan_interval_s=10

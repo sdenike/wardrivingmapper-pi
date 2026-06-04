@@ -25,9 +25,11 @@
 #define AP_SSID "WarDrivingMapper"
 /* The AP runs on the USB dongle (RT5370 — a reliable AP radio; the onboard
  * brcmfmac AP fails). The scanner pauses while the dongle is the hotspot.
- * Connectivity stays up on wlan0 (DeNike/eth0). Joins go to wlan0 (client). */
-#define AP_IFACE     "wlan1"
-#define CLIENT_IFACE "wlan0"
+ * Connectivity stays up on the onboard radio (DeNike/eth0). Joins go to it.
+ * Stable names (systemd .link / netplan): dongle=wscan, onboard=wmain — they
+ * no longer ride the kernel's wlanN namespace, which swapped across reboots. */
+#define AP_IFACE     "wscan"
+#define CLIENT_IFACE "wmain"
 
 static volatile bool s_active;
 static volatile bool s_should_stop;

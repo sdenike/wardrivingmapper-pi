@@ -30,23 +30,24 @@ GPSD
     sudo systemctl restart gpsd.socket || true
 fi
 
-# Pin WiFi interface names by DRIVER so the radios never swap wlan0/wlan1 across
-# reboots (the onboard WiFi can fail its boot firmware load and let the USB
-# dongle grab wlan0, which breaks scan_iface/hw_id/connectivity). Onboard
-# brcmfmac = wlan0 (client + DeNike); USB rt2800usb dongle = wlan1 (scanner +
-# setup AP). The dongle is ALWAYS wlan1, so scanning works even if the onboard
-# radio fails to come up.
-sudo tee /etc/systemd/network/10-wlan-onboard.link >/dev/null <<'LINK'
+# Pin WiFi interface names by DRIVER so the radios never swap across reboots.
+# Use NON-wlanN names: renaming INTO the kernel's own wlanN namespace races with
+# the kernel's assignment (worsened by the onboard's flaky firmware-load timing)
+# and was unreliable. Onboard brcmfmac = wmain (connectivity); USB rt2800usb
+# dongle = wscan (scanner + setup AP). Connectivity (netplan) must bind the
+# onboard by MAC to wmain — that part is site-specific, done outside this script.
+sudo rm -f /etc/systemd/network/10-wlan-onboard.link /etc/systemd/network/11-wlan-dongle.link
+sudo tee /etc/systemd/network/10-wmain.link >/dev/null <<'LINK'
 [Match]
 Driver=brcmfmac
 [Link]
-Name=wlan0
+Name=wmain
 LINK
-sudo tee /etc/systemd/network/11-wlan-dongle.link >/dev/null <<'LINK'
+sudo tee /etc/systemd/network/11-wscan.link >/dev/null <<'LINK'
 [Match]
 Driver=rt2800usb
 [Link]
-Name=wlan1
+Name=wscan
 LINK
 
 if [[ ! -x "$BIN" ]]; then
