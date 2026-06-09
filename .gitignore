@@ -5,6 +5,10 @@ build/
 *.so
 compile_commands.json
 
+# Python helper scripts (gps-aid / gps-cache / gps-diag)
+__pycache__/
+*.pyc
+
 # Render artifacts at repo root (committed screenshots live under docs/)
 /screenshot*.png
 /*.bmp
