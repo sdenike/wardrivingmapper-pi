@@ -66,8 +66,33 @@ port. **Geometry TBD with the user.**
 
 ## Scanning / GPS (v1)
 
-- **GPS:** USB u-blox 7 at `/dev/ttyACM0` via **gpsd** (not yet installed on the
-  Pi). screens.c reads `g_gps_data`; a gpsd client fills it.
+- **GPS:** USB u-blox 7 via **gpsd**, pinned to the stable
+  `/dev/serial/by-id/usb-u-blox…` path (NOT `/dev/ttyACMx`, which renumbers when
+  the dongle is moved to another USB port / replugged). `gps_gpsd.c` (libgps)
+  fills `g_gps_data`; screens.c reads it.
+- **Cold-start aiding (2026-06-08):** this u-blox 7 retains no almanac/time
+  across boots (SKY shows `az=0`/no elevation; the receiver clock free-runs at
+  the 2019 GPS week-rollover epoch), so first fix is slow even outdoors — and
+  "22 sats" is satellites *in view*, not used. `gps-aid.py` (run once per boot
+  by `gps-aid.service`, after gpsd) pushes **UBX-AID-INI** — the legacy aiding
+  message, correct for this protocol-14 receiver (MGA is proto 15+) — with the
+  Pi's NTP time (honest `tAcc`: 2 s when NTP-synced, 30 min when free-running).
+  Verified: the receiver clock snaps 2019→present the instant it lands. Sent via
+  `ubxtool -c` (reaches the receiver through gpsd; no need to free the device).
+  Near-instant fixes would need AssistNow ephemeris (free u-blox token) — TODO.
+- **Orbit cache + warm start (2026-06-09):** `gps-cache.py` extends the aiding to
+  a software backup-cell. It saves the receiver's almanac / ephemeris / AOP to the
+  SD card while it has a fix (30-min timer + on shutdown, real frames only) and
+  replays them on boot via `gps-cache.service` (which supersedes `gps-aid.service`
+  — it sends AID-INI itself). Restore is one direct-serial write (ubxtool is
+  ~2.3 s/call so per-frame would take ~90 s); save stays through gpsd (no GPS
+  interruption). AssistNow Autonomous (AOP) is enabled (`CFG-NAVX5`) so the
+  receiver predicts ~3-day orbits offline. **Verified: a warm boot fixed in ~25 s**
+  (vs minutes / never when cold) once in adequate sky — the cache removes the
+  ephemeris-decode delay; the weak dongle antenna still needs ~30 dB-Hz to lock.
+  `gps-diag.py` logs boot timing + per-satellite C/N0 for diagnosis. Next:
+  **AssistNow Online** — per-user u-blox token set in the Setup web UI (never
+  shipped in the repo) for fast first-boot fixes in a brand-new location.
 - **Wi-Fi:** active `iw scan` on the onboard `wlan0` for v1 (the onboard radio
   has no monitor mode). Kismet-style passive capture would need a USB adapter —
   deferred. Single radio means scan + upload can't run simultaneously (same
@@ -81,14 +106,24 @@ Researched and confirmed against the actual Pi over SSH:
 - **Overlay (CONFIRMED working 2026-06-02):** the stock `piscreen` overlay
   matches the HAT pinout (DC=GPIO24, RST=GPIO25, LED=GPIO22, touch
   PENIRQ=GPIO17). Persisted in `/boot/firmware/config.txt` (with
-  `dtparam=spi=on`): `dtoverlay=piscreen,rotate=90,speed=24000000` — the
-  **non-drm fbtft** variant. `vc4-kms-v3d` stays.
+  `dtparam=spi=on`): `dtoverlay=piscreen,rotate=270,speed=24000000` — the
+  **non-drm fbtft** variant. `vc4-kms-v3d` stays. (`rotate=270`, not `90`: the
+  panel mounts 180°-flipped in the case (2026-06-08); both are landscape
+  480×320 so only the image flips. The app then runs `--live --invert-x` so
+  left/right swipe direction matches — tap/hold are position-independent.)
 - **Use the non-drm variant, NOT `,drm`:** the `,drm` variant comes up portrait
   **320×480**; the fbtft variant gives the landscape **480×320** the UI renders.
   With no HDMI attached, vc4-kms creates no framebuffer, so fbtft grabs
   **`/dev/fb0`** (16bpp) — the node the app opens (NOT `/dev/fb1`). The app
   auto-detects the ADS7846 touch node by capability, so event-number shuffles
   across reboots don't matter.
+- **Kiosk console hardening (2026-06-08):** the fbtft panel IS a framebuffer
+  console, so the kernel text cursor + login getty bleed a blinking cursor /
+  log text through the LVGL UI (top-left, or mid-screen where log text lands).
+  Fixed by `vt.global_cursor_default=0` in `cmdline.txt`, `disable getty@tty1`,
+  and `wdm-console-off.sh` — run as the UI service's `ExecStartPre` (root), it
+  unbinds fbcon from the panel fb on every start, late enough to beat the
+  early-boot rebind. All baked into `install-service.sh`.
 - **Needs apt:** `evtest`, `tslib`/`libts-bin` (calibration), plus `cmake`/`git`
   to build on-device. Touch calibration via tslib `ts_calibrate` → `/etc/pointercal`.
 - Reboot + verify `/dev/fb1` + `evtest` is a deliberate step (panel could be
@@ -98,7 +133,7 @@ Researched and confirmed against the actual Pi over SSH:
 
 1. ✅ Port the ESP32 screens; render SCAN headless to PNG.
 2. ⬜ Pick geometry; adapt the layout to the Elecrow panel; render all screens.
-3. ⬜ Light the SPI panel on the Pi (`/dev/fb1` + touch); run the same binary via fbdev.
-4. ⬜ Wire real data: gpsd GPS + `iw scan`; map device screens to live state.
+3. ✅ Light the SPI panel on the Pi (`/dev/fb0` + touch); run the same binary via fbdev.
+4. ✅ Wire real data: gpsd GPS + `iw scan`; map device screens to live state.
 5. ⬜ Upload to the backend API; trusted-network gating.
 6. ⬜ Installer script + systemd service + kiosk-on-boot.
