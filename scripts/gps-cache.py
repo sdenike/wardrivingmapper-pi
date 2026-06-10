@@ -305,6 +305,95 @@ def restore():
     return 0
 
 
+# ── AssistNow Online (optional; per-user token from the Setup web UI) ────────
+# Fetches CURRENT orbits for ALL satellites from u-blox over WiFi, so the receiver
+# can fix on the FIRST boot in a brand-new location with no prior good-signal
+# bootstrap. The token is per-operator (config.txt, written by the web UI) and is
+# NEVER shipped in the repo. With no token the feature is simply skipped.
+ASSISTNOW_HOSTS = ("online-live1.services.u-blox.com", "online-live2.services.u-blox.com")
+
+
+def resolve_config():
+    """Path to the wardriver's config.txt (holds assistnow_token). The C app reads
+    ./config.txt from its checkout; we run from /usr/local/sbin, so find it by the
+    usual deploy layout (or $WDM_CONFIG)."""
+    env = os.environ.get("WDM_CONFIG")
+    if env and os.path.exists(env):
+        return env
+    for pat in ("/home/*/wardrivingmapper-pi/config.txt",
+                "/root/wardrivingmapper-pi/config.txt",
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.txt")):
+        hits = sorted(glob.glob(pat))
+        if hits:
+            return hits[0]
+    return None
+
+
+def read_config():
+    cfg = {}
+    path = resolve_config()
+    if path:
+        try:
+            for line in open(path):
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    cfg[k.strip()] = v.strip()
+        except OSError:
+            pass
+    return cfg
+
+
+def fetch_assistnow(token, pos=None):
+    """Download current GPS orbits from u-blox AssistNow Online in legacy AID format
+    (proto-14 / u-blox 7). Returns raw UBX AID bytes ready to inject, or None
+    (offline / bad token). The token is never logged."""
+    import urllib.request
+    query = "token=%s;gnss=gps;datatype=eph,alm,aux;format=aid" % token
+    if pos:
+        query += ";lat=%.4f;lon=%.4f;pacc=100000" % (pos[0], pos[1])
+    for host in ASSISTNOW_HOSTS:
+        try:
+            with urllib.request.urlopen("https://%s/GetOnlineData.ashx?%s" % (host, query),
+                                        timeout=12) as r:
+                data = r.read()
+            if data[:2] == b"\xB5\x62":            # a valid UBX AID stream
+                return data
+            sys.stderr.write("assistnow: %s returned %d non-UBX bytes (token invalid?)\n"
+                             % (host, len(data)))
+        except Exception as e:                     # offline / DNS / TLS / HTTP — all non-fatal
+            sys.stderr.write("assistnow: %s unreachable (%s)\n" % (host, e))
+    return None
+
+
+def assistnow():
+    if os.geteuid() != 0:
+        sys.exit("gps-cache assistnow needs root (opens %s + bounces gpsd)" % DEVICE)
+    token = read_config().get("assistnow_token", "").strip()
+    if not token:
+        print("gps-cache assistnow: no assistnow_token set (add one in the Setup web UI) — skipping")
+        return 0
+    pos = GPS_AID.read_last_pos(GPS_AID.STATE_FILE) if GPS_AID else None
+    data = fetch_assistnow(token, pos)
+    if not data:
+        print("gps-cache assistnow: nothing fetched (offline or bad token) — SD cache still covers boot")
+        return 0
+    buf = bytearray()
+    aop = aop_enable_frame()
+    if aop:
+        buf += aop
+    ini = aid_ini_frame()
+    if ini:
+        buf += ini[0]
+    buf += data
+    inject_direct(bytes(buf))
+    print("gps-cache assistnow: injected %d AID frames (%d bytes) from u-blox AssistNow"
+          % (len(parse_frames(data)), len(buf)))
+    time.sleep(3)                                  # let gpsd re-attach after the bounce
+    save()                                         # bake the fresh orbits into the SD cache
+    return 0
+
+
 # ── systemd wiring (this supersedes plain gps-aid.service for boot aiding) ───
 UNIT_RESTORE = """[Unit]
 Description=WarDrivingMapper GPS aiding restore (SD cache + AOP + AID-INI -> warm start)
@@ -354,11 +443,25 @@ ExecStop=%s save
 WantedBy=multi-user.target
 """ % INSTALL_PATH
 
+UNIT_ASSISTNOW = """[Unit]
+Description=WarDrivingMapper AssistNow Online (fetch fresh GPS orbits over WiFi)
+After=network-online.target gpsd.service
+Wants=network-online.target gpsd.service
+
+[Service]
+Type=oneshot
+ExecStart=%s assistnow
+
+[Install]
+WantedBy=multi-user.target
+""" % INSTALL_PATH
+
 UNITS = {
     "/etc/systemd/system/gps-cache.service": UNIT_RESTORE,
     "/etc/systemd/system/gps-cache-save.service": UNIT_SAVE,
     "/etc/systemd/system/gps-cache-save.timer": TIMER_SAVE,
     "/etc/systemd/system/gps-cache-shutdown.service": UNIT_SHUTDOWN,
+    "/etc/systemd/system/gps-assistnow.service": UNIT_ASSISTNOW,
 }
 
 
@@ -372,7 +475,8 @@ def install():
     run(["systemctl", "daemon-reload"])
     # gps-cache restore now sends AID-INI itself, so retire the standalone aider.
     run(["systemctl", "disable", "--now", "gps-aid.service"])
-    for unit in ("gps-cache.service", "gps-cache-save.timer", "gps-cache-shutdown.service"):
+    for unit in ("gps-cache.service", "gps-cache-save.timer", "gps-cache-shutdown.service",
+                 "gps-assistnow.service"):
         run(["systemctl", "enable", unit])
     run(["systemctl", "start", "gps-cache-save.timer"])
     run(["systemctl", "start", "gps-cache-shutdown.service"])
@@ -380,13 +484,14 @@ def install():
     print("  (disabled gps-aid.service — gps-cache restore now sends AID-INI too)")
     print("Seed the cache once the device gets a fix:  sudo %s save" % INSTALL_PATH)
     print("It then auto-restores on every boot. Remove: sudo %s --uninstall" % INSTALL_PATH)
+    print("AssistNow Online runs when a token is set in the Setup web UI (else skipped).")
 
 
 def uninstall():
     if os.geteuid() != 0:
         sys.exit("--uninstall needs root")
-    for unit in ("gps-cache.service", "gps-cache-save.timer",
-                 "gps-cache-save.service", "gps-cache-shutdown.service"):
+    for unit in ("gps-cache.service", "gps-cache-save.timer", "gps-cache-save.service",
+                 "gps-cache-shutdown.service", "gps-assistnow.service"):
         run(["systemctl", "disable", "--now", unit])
     for path in list(UNITS) + [INSTALL_PATH]:
         try:
@@ -400,8 +505,8 @@ def uninstall():
 
 def main():
     ap = argparse.ArgumentParser(description="SD-backed GPS aiding cache for the WarDrivingMapper Pi")
-    ap.add_argument("action", nargs="?", choices=["save", "restore", "status"],
-                    help="save: orbits->SD  |  restore: SD->receiver (boot)  |  status: show cache")
+    ap.add_argument("action", nargs="?", choices=["save", "restore", "status", "assistnow"],
+                    help="save: orbits->SD | restore: SD->receiver (boot) | assistnow: fetch orbits over WiFi | status")
     ap.add_argument("--install", action="store_true", help="install boot-restore + save timer + shutdown save (root)")
     ap.add_argument("--uninstall", action="store_true", help="remove services, re-enable gps-aid.service (root)")
     args = ap.parse_args()
@@ -416,6 +521,8 @@ def main():
         return restore()
     if args.action == "status":
         return status()
+    if args.action == "assistnow":
+        return assistnow()
     ap.print_help()
     return 1
 
@@ -437,8 +544,11 @@ def status():
         found = True
         print("  last_pos: %s (age %.1fh)" % (open(lp).read().strip(),
               (time.time() - os.path.getmtime(lp)) / 3600.0))
+    tok = read_config().get("assistnow_token", "").strip()
+    print("  AssistNow: %s" % ("token set — Online fetch enabled" if tok
+                               else "no token (Online disabled; SD cache only)"))
     if not found:
-        print("  (empty — run 'gps-cache.py save' after the receiver has a fix)")
+        print("  (cache empty — run 'gps-cache.py save' after the receiver has a fix)")
     return 0
 
 

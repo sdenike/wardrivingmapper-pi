@@ -19,6 +19,7 @@ typedef struct {
     int  scan_interval_s;    /* seconds between scans                         */
     bool keep_uploaded;      /* keep records after upload instead of archiving */
     char ap_pass[33];        /* setup-hotspot password (per-device random)    */
+    char assistnow_token[80];/* u-blox AssistNow Online token (per-user; ""=off) */
 } wdm_config_t;
 
 /* Load config from `path`. Unknown keys are ignored; absent file leaves the

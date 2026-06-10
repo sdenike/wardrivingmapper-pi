@@ -17,6 +17,7 @@ static wdm_config_t s_cfg = {
     .scan_interval_s = 10,
     .keep_uploaded   = false,
     .ap_pass         = "",      /* generated per-device at first run */
+    .assistnow_token = "",      /* u-blox AssistNow token (per-user; set via web UI) */
 };
 
 /* An interface name must be shell-safe: it gets interpolated into `iw`/`ip`
@@ -61,6 +62,7 @@ void config_set(const char *key, const char *val)
     else if (!strcmp(key, "scan_interval_s")) { int n = atoi(val); if (n >= 1 && n <= 3600) s_cfg.scan_interval_s = n; }
     else if (!strcmp(key, "keep_uploaded"))   s_cfg.keep_uploaded = parse_bool(val);
     else if (!strcmp(key, "ap_pass"))         copy_field(s_cfg.ap_pass, sizeof s_cfg.ap_pass, val);
+    else if (!strcmp(key, "assistnow_token")) copy_field(s_cfg.assistnow_token, sizeof s_cfg.assistnow_token, val);
     /* unknown keys ignored — forward-compatible with future additions */
 }
 
@@ -95,6 +97,7 @@ bool config_save(const char *path)
     fprintf(f, "scan_interval_s=%d\n", s_cfg.scan_interval_s);
     fprintf(f, "keep_uploaded=%s\n",   s_cfg.keep_uploaded ? "true" : "false");
     fprintf(f, "ap_pass=%s\n",         s_cfg.ap_pass);
+    fprintf(f, "assistnow_token=%s\n", s_cfg.assistnow_token);
     fclose(f);
     chmod(path, 0600);   /* holds the API key — keep it private */
     return true;

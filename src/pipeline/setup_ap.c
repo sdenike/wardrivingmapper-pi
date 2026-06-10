@@ -282,6 +282,16 @@ static void send_config_page(int fd)
                 "<option value=false%s>No (archive + remove)</option>"
                 "<option value=true%s>Yes (keep a copy)</option></select>",
             c->keep_uploaded ? "" : " selected", c->keep_uploaded ? " selected" : "");
+    /* AssistNow token: a per-user credential — never echo it back; a blank submit
+     * keeps the current one (same pattern as the API key). Each operator uses their
+     * OWN free token, so the project never ships one. Speeds up GPS cold-start lock. */
+    dprintf(fd, "<label>AssistNow token %s</label>"
+                "<input name=assistnow_token value=\"\" placeholder=\"%s\">"
+                "<small style=\"display:block;margin-top:4px;color:#71717a\">Optional &mdash; "
+                "faster GPS lock by fetching satellite orbits over Wi-Fi. Get a free token at "
+                "thingstream.io (Location Services &rarr; AssistNow). Your own key, never shared.</small>",
+            c->assistnow_token[0] ? "(set &mdash; blank keeps it)" : "(optional, not set)",
+            c->assistnow_token[0] ? "leave blank to keep current token" : "AssistNow token");
     dprintf(fd, "<button>Save settings</button></form>");
 
     dprintf(fd, "</body></html>");
@@ -308,6 +318,7 @@ static void handle_save(int fd, const char *body)
     if (form_get(body, "scan_iface", v, sizeof v))      config_set("scan_iface", v);
     if (form_get(body, "scan_interval_s", v, sizeof v)) config_set("scan_interval_s", v);
     if (form_get(body, "keep_uploaded", v, sizeof v))   config_set("keep_uploaded", v);
+    if (form_get(body, "assistnow_token", v, sizeof v) && v[0]) config_set("assistnow_token", v);  /* blank = keep current */
     bool ok = config_save(cfg_path());
     ESP_LOGI(TAG, "settings saved via web UI (%s)", ok ? "ok" : "FAILED");
     send_message_page(fd, ok ? "Settings saved" : "Save failed",
